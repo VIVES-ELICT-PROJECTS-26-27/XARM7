@@ -21,4 +21,9 @@ services:
       - /mnt/wslg:/mnt/wslg
       - ./src:/home/ubuntu/src
       - /dev/input:/dev/input
+      - overlay_ws:/home/ubuntu/overlay_ws
+      - ./packages:/home/ubuntu/overlay_ws/src
     restart: unless-stopped
+
+volumes:
+  overlay_ws:

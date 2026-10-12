@@ -2,7 +2,7 @@
 
 A Docker-based development environment for the xArm7 robotic arm using ROS 2 Humble and MoveIt 2. The container can be launched either in servo mode or in planner mode. For both modes you can either control a simulation or the real robot. 
 
-## Demo
+## Introduction
 
 ### Planner
 https://github.com/user-attachments/assets/cb43e891-b189-4561-9a3b-d466995449d2
@@ -13,6 +13,11 @@ https://github.com/user-attachments/assets/cb43e891-b189-4561-9a3b-d466995449d2
 
 Moveit Servo facilitates realtime control of the robot arm. The servo accepts invidual joint velocities, desired velocity of the end effector or the desired pose of the end effector.   
 Read the explanation on the [moveit page](https://moveit.picknik.ai/main/doc/examples/realtime_servo/realtime_servo_tutorial.html).
+
+### Reading List
+* Read the [beginner ROS tutorial](https://docs.ros.org/en/humble/Tutorials/Beginner-CLI-Tools.html)
+* Watch the [MoveIt Introduction Video](https://youtu.be/7KvF7Dj7bz0)
+* Read the [MoveIt quickstart](https://moveit.picknik.ai/main/doc/tutorials/quickstart_in_rviz/quickstart_in_rviz_tutorial.html)
 
 ## Prerequisites
 
@@ -28,13 +33,37 @@ Read the explanation on the [moveit page](https://moveit.picknik.ai/main/doc/exa
 docker compose build
 ```
 
-## Running the container
-### Options
-1. Automatic Path Planning
-2. Servo controller for Direct Control
-3. Use your own commands on an existing or new container
+### Optional: Create your own scripts
+Create your own scripts in the `src` directory. Launch a container with the MoveIt servo or with the MoveIt planner and then attach a bash shell to your running container. Run your scripts from the shell with `python3 /home/ubuntu/src/your_script.py`
 
-## Option 1: Planner
+The following example scripts are already present:
+* `keypad_ctrl.py` a controller that takes numeric keypad controls and moves the robot. (requires MoveIt servo)
+* `simple_move.py` a simple script that moves the robot to a predefined position. (requires MoveIt Path Planner)
+* `spawn_cube.py` a script that spawns a marker object into rviz. (Useful for simulations with objects)
+
+### Optional: Add your own ROS packages
+You can create or import your own packages in the `packages/` directory. These packages will be built inside `overlay_ws` in the docker container. Build them inside the container on initial use and afterwards every time you add a new package. The result is kept for the next container:
+
+```bash
+docker exec -it hn-xarm7-sim-xarm7-ctl-run-<id> bash
+source /opt/ros/humble/setup.bash
+source /home/ubuntu/ros2_ws/install/setup.bash
+cd /home/ubuntu/overlay_ws
+colcon build --symlink-install
+source install/setup.bash
+```
+Launch the container with the MoveIt servo or MoveIt planner. Attach a bash shell to the running container and run `ros2 run your_package your_node`
+
+## Running the container
+### Launch Modes
+You can choose the appplications that are launched in the container
+
+1. MoveIt Planner
+2. MoveIt Servo
+3. Empty Container
+4. Attach a shell to a running container
+
+### 1. MoveIt Planner
 ```
 docker compose run --rm xarm7-ctl planner
 ```
@@ -42,9 +71,7 @@ docker compose run --rm xarm7-ctl planner
 Without an ip address after the planner parameter creates a simulator. It launches:
 
 * **RViz2** - Visualization and motion planning interface
-
 * **MoveIt 2** - Motion planning framework
-
 * **ros2_control** - Robot controller interface
 
 To connect to a physical xArm7:
@@ -65,7 +92,7 @@ The computer running Docker must be able to reach the robot over the network.
 ping 192.168.1.237
 ```
 
-## Option 2: Servo
+### 2. MoveIt Servo
 ```
 docker compose run --rm xarm7-ctl servo
 ```
@@ -73,9 +100,7 @@ docker compose run --rm xarm7-ctl servo
 Without an IP address, this starts a simulation. It launches:
 
 * **RViz2** - Visualization
-
 * **MoveIt Servo** - Streams Cartesian velocity to the arm
-
 * **ros2_control** - Robot controller interface
 
 To connect to a physical xArm7:
@@ -95,7 +120,6 @@ The computer running Docker must be able to reach the robot over the network.
 ```bash
 ping 192.168.1.237
 ```
-
 In a second shell inside that container, hold a key to jog the arm:
 
 ```bash
@@ -113,14 +137,15 @@ python3 /home/ubuntu/src/keypad_ctrl.py
 
 `q` quits. Releasing a key stops that motion.
 
-## Option 3: Your own bash shell
-To start a ROS-configured Bash shell instead:
+### 3. Empty Container
+To start a ROS-configured Bash shell in a **new** container:
 
 ```bash
 docker compose run --rm xarm7-ctl bash
 ```
 
-You can also open a new shell in an already running container:
+### 4. Attach shell to running container
+You can also open a new shell in an **already running** container:
 
 ```bash
 docker exec -it hn-xarm7-sim-xarm7-ctl-run-<id> bash
@@ -129,8 +154,14 @@ docker exec -it hn-xarm7-sim-xarm7-ctl-run-<id> bash
 source /opt/ros/humble/setup.bash
 source /home/ubuntu/ros2_ws/install/setup.bash
 
-# Launch your python script (Example)
+# Optionally source your custom packages
+source /home/ubuntu/overlay_ws/install/setup.bash
+
+# Launch your python script (Example - requires moveit planner)
 python3 /home/ubuntu/src/simple_move.py
+
+# Optionally launch a custom ROS node (Example - requires moveit servo)
+ros2 run keypad_ctrl keypad_ctrl
 ```
 
 ## Moving the Robot with the Planner
@@ -215,6 +246,7 @@ XARM7/
 ├── Dockerfile           # Image build instructions
 ├── cyclonedds.xml       # DDS configuration (optional)
 ├── entrypoint.sh        # Startup script
+├── packages/            # ROS packages added to the overlay workspace
 ├── src/                 # User scripts / development code
 └── README.md            # This file
 ```
