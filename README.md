@@ -28,7 +28,7 @@ Read the explanation on the [moveit page](https://moveit.picknik.ai/main/doc/exa
 docker compose build
 ```
 
-### Add your own ROS packages
+### Optional: Add your own ROS packages
 Packages under `packages/` are an overlay workspace for your own packages. Build them once inside the container, and again after you add a package. The result is kept for the next container:
 
 ```bash
@@ -125,13 +125,13 @@ python3 /home/ubuntu/src/keypad_ctrl.py
 `q` quits. Releasing a key stops that motion.
 
 ## Option 3: Your own bash shell
-To start a ROS-configured Bash shell instead:
+To start a ROS-configured Bash shell in a **new** container:
 
 ```bash
 docker compose run --rm xarm7-ctl bash
 ```
 
-You can also open a new shell in an already running container:
+You can also open a new shell in an **already running** container:
 
 ```bash
 docker exec -it hn-xarm7-sim-xarm7-ctl-run-<id> bash
@@ -140,8 +140,14 @@ docker exec -it hn-xarm7-sim-xarm7-ctl-run-<id> bash
 source /opt/ros/humble/setup.bash
 source /home/ubuntu/ros2_ws/install/setup.bash
 
+# Optionally source your custom packages
+source /home/ubuntu/overlay_ws/install/setup.bash
+
 # Launch your python script (Example)
 python3 /home/ubuntu/src/simple_move.py
+
+# Optionally launch a custom ROS node
+ros2 run keypad_ctrl keypad_ctrl
 ```
 
 ## Moving the Robot with the Planner
