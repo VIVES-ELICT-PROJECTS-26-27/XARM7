@@ -33,8 +33,16 @@ Read the explanation on the [moveit page](https://moveit.picknik.ai/main/doc/exa
 docker compose build
 ```
 
+### Optional: Create your own scripts
+Create your own scripts in the `src` directory. Launch a container with the MoveIt servo or with the MoveIt planner and then attach a bash shell to your running container. Run your scripts from the shell with `python3 /home/ubuntu/src/your_script.py`
+
+The following example scripts are already present:
+* `keypad_ctrl.py` a controller that takes numeric keypad controls and moves the robot. (requires MoveIt servo)
+* `simple_move.py` a simple script that moves the robot to a predefined position. (requires MoveIt Path Planner)
+* `spawn_cube.py` a script that spawns a marker object into rviz. (Useful for simulations with objects)
+
 ### Optional: Add your own ROS packages
-Packages under `packages/` are an overlay workspace for your own packages. Build them once inside the container, and again after you add a package. The result is kept for the next container:
+You can create or import your own packages in the `packages/` directory. These packages will be built inside `overlay_ws` in the docker container. Build them inside the container on initial use and afterwards every time you add a new package. The result is kept for the next container:
 
 ```bash
 docker exec -it hn-xarm7-sim-xarm7-ctl-run-<id> bash
@@ -44,14 +52,18 @@ cd /home/ubuntu/overlay_ws
 colcon build --symlink-install
 source install/setup.bash
 ```
+Launch the container with the MoveIt servo or MoveIt planner. Attach a bash shell to the running container and run `ros2 run your_package your_node`
 
 ## Running the container
-### Options
-1. Automatic Path Planning
-2. Servo controller for Direct Control
-3. Use your own commands on an existing or new container
+### Launch Modes
+You can choose the appplications that are launched in the container
 
-## Option 1: Planner
+1. MoveIt Planner
+2. MoveIt Servo
+3. Empty Container
+4. Attach a shell to a running container
+
+### 1. MoveIt Planner
 ```
 docker compose run --rm xarm7-ctl planner
 ```
@@ -59,9 +71,7 @@ docker compose run --rm xarm7-ctl planner
 Without an ip address after the planner parameter creates a simulator. It launches:
 
 * **RViz2** - Visualization and motion planning interface
-
 * **MoveIt 2** - Motion planning framework
-
 * **ros2_control** - Robot controller interface
 
 To connect to a physical xArm7:
@@ -82,7 +92,7 @@ The computer running Docker must be able to reach the robot over the network.
 ping 192.168.1.237
 ```
 
-## Option 2: Servo
+### 2. MoveIt Servo
 ```
 docker compose run --rm xarm7-ctl servo
 ```
@@ -90,9 +100,7 @@ docker compose run --rm xarm7-ctl servo
 Without an IP address, this starts a simulation. It launches:
 
 * **RViz2** - Visualization
-
 * **MoveIt Servo** - Streams Cartesian velocity to the arm
-
 * **ros2_control** - Robot controller interface
 
 To connect to a physical xArm7:
@@ -129,13 +137,14 @@ python3 /home/ubuntu/src/keypad_ctrl.py
 
 `q` quits. Releasing a key stops that motion.
 
-## Option 3: Your own bash shell
+### 3. Empty Container
 To start a ROS-configured Bash shell in a **new** container:
 
 ```bash
 docker compose run --rm xarm7-ctl bash
 ```
 
+### 4. Attach shell to running container
 You can also open a new shell in an **already running** container:
 
 ```bash
