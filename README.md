@@ -143,10 +143,10 @@ source /home/ubuntu/ros2_ws/install/setup.bash
 # Optionally source your custom packages
 source /home/ubuntu/overlay_ws/install/setup.bash
 
-# Launch your python script (Example)
+# Launch your python script (Example - requires moveit planner)
 python3 /home/ubuntu/src/simple_move.py
 
-# Optionally launch a custom ROS node
+# Optionally launch a custom ROS node (Example - requires moveit servo)
 ros2 run keypad_ctrl keypad_ctrl
 ```
 
