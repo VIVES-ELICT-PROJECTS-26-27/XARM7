@@ -3,6 +3,9 @@ set -e
 
 source /opt/ros/humble/setup.bash
 source /home/ubuntu/ros2_ws/install/setup.bash
+if [ -f /home/ubuntu/overlay_ws/install/setup.bash ]; then
+    source /home/ubuntu/overlay_ws/install/setup.bash
+fi
 
 unset RMW_IMPLEMENTATION
 unset CYCLONEDDS_URI

@@ -28,6 +28,18 @@ Read the explanation on the [moveit page](https://moveit.picknik.ai/main/doc/exa
 docker compose build
 ```
 
+### Add your own ROS packages
+Packages under `packages/` are an overlay workspace for your own packages. Build them once inside the container, and again after you add a package. The result is kept for the next container:
+
+```bash
+docker exec -it hn-xarm7-sim-xarm7-ctl-run-<id> bash
+source /opt/ros/humble/setup.bash
+source /home/ubuntu/ros2_ws/install/setup.bash
+cd /home/ubuntu/overlay_ws
+colcon build --symlink-install
+source install/setup.bash
+```
+
 ## Running the container
 ### Options
 1. Automatic Path Planning
@@ -95,7 +107,6 @@ The computer running Docker must be able to reach the robot over the network.
 ```bash
 ping 192.168.1.237
 ```
-
 In a second shell inside that container, hold a key to jog the arm:
 
 ```bash
@@ -215,6 +226,7 @@ XARM7/
 ├── Dockerfile           # Image build instructions
 ├── cyclonedds.xml       # DDS configuration (optional)
 ├── entrypoint.sh        # Startup script
+├── packages/            # ROS packages added to the overlay workspace
 ├── src/                 # User scripts / development code
 └── README.md            # This file
 ```
