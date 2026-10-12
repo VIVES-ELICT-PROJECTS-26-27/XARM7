@@ -2,7 +2,7 @@
 
 A Docker-based development environment for the xArm7 robotic arm using ROS 2 Humble and MoveIt 2. The container can be launched either in servo mode or in planner mode. For both modes you can either control a simulation or the real robot. 
 
-## Demo
+## Introduction
 
 ### Planner
 https://github.com/user-attachments/assets/cb43e891-b189-4561-9a3b-d466995449d2
@@ -13,6 +13,11 @@ https://github.com/user-attachments/assets/cb43e891-b189-4561-9a3b-d466995449d2
 
 Moveit Servo facilitates realtime control of the robot arm. The servo accepts invidual joint velocities, desired velocity of the end effector or the desired pose of the end effector.   
 Read the explanation on the [moveit page](https://moveit.picknik.ai/main/doc/examples/realtime_servo/realtime_servo_tutorial.html).
+
+### Reading List
+* Read the [beginner ROS tutorial](https://docs.ros.org/en/humble/Tutorials/Beginner-CLI-Tools.html)
+* Watch the [MoveIt Introduction Video](https://youtu.be/7KvF7Dj7bz0)
+* Read the [MoveIt quickstart](https://moveit.picknik.ai/main/doc/tutorials/quickstart_in_rviz/quickstart_in_rviz_tutorial.html)
 
 ## Prerequisites
 
