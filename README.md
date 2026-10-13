@@ -78,6 +78,9 @@ source install/setup.bash
 
 These examples launch the Panda arm, not the xArm.
 
+### Optional: Scene Objects
+Add scene objects in the directory `scene objects`. This directory is mounted onto docker container so that objects in this directory can be loaded into the MotionPlanning pane in RVIZ. 
+
 ## Running the container
 ### Launch Modes
 You can choose the appplications that are launched in the container
