@@ -27,6 +27,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-humble-moveit-servo \
     && rm -rf /var/lib/apt/lists/*
 
+# moveit2_tutorials is built in the overlay. These libraries must live in
+# the image: apt installs inside a container disappear with --rm.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-humble-moveit-ros-perception \
+    ros-humble-moveit-visual-tools \
+    ros-humble-rviz-visual-tools \
+    ros-humble-moveit-task-constructor-core \
+    ros-humble-moveit-hybrid-planning \
+    ros-humble-moveit-resources-panda-moveit-config \
+    ros-humble-moveit-configs-utils \
+    ros-humble-gripper-controllers \
+    && rm -rf /var/lib/apt/lists/*
+
 # Step 3: Copy config files (changes here trigger fast rebuild)
 COPY cyclonedds.xml /cyclonedds.xml
 COPY entrypoint.sh /entrypoint.sh

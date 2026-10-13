@@ -23,6 +23,7 @@ services:
       - /dev/input:/dev/input
       - overlay_ws:/home/ubuntu/overlay_ws
       - ./packages:/home/ubuntu/overlay_ws/src
+      - ./tutorials:/home/ubuntu/overlay_ws/src/tutorials
     restart: unless-stopped
 
 volumes:

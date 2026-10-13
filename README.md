@@ -54,6 +54,29 @@ source install/setup.bash
 ```
 Launch the container with the MoveIt servo or MoveIt planner. Attach a bash shell to the running container and run `ros2 run your_package your_node`
 
+### Optional: Build the MoveIt tutorials
+To learn more about MoveIt you can try some of the tutorials. Clone the Humble branch of the MoveIt tutorials into `tutorials/`:
+
+```bash
+mkdir -p tutorials
+git clone -b humble --depth 1 https://github.com/ros-planning/moveit2_tutorials.git tutorials/moveit2_tutorials
+```
+
+Do not import `moveit2_tutorials.repos`. That clones MoveIt from source and rebuilds it beside the packages already installed in the image.
+
+`tutorials/` is mounted into the same `overlay_ws` as `packages/`. Build it once inside the container, and again when you add a tutorial package. C++ edits need another build. The result is kept for the next container:
+
+```bash
+docker exec -it hn-xarm7-sim-xarm7-ctl-run-<id> bash
+source /opt/ros/humble/setup.bash
+source /home/ubuntu/ros2_ws/install/setup.bash
+cd /home/ubuntu/overlay_ws
+colcon build --symlink-install
+source install/setup.bash
+```
+
+These examples launch the Panda arm, not the xArm.
+
 ## Running the container
 ### Launch Modes
 You can choose the appplications that are launched in the container
@@ -179,11 +202,8 @@ ros2 run keypad_ctrl keypad_ctrl
 1. In RViz's **MotionPlanning** panel:
 
    * Go to the **"Planning"** tab
-
    * Set **Goal State** to a predefined pose or "random valid"
-
    * Click **"Plan"** to preview the trajectory
-
    * Click **"Execute"** to move the robot
 
 ### Method 3: Command Line (ros2 action)
@@ -218,6 +238,49 @@ ros2 action send_goal /xarm7_traj_controller/follow_joint_trajectory \
 
 Python scripts can use ROS 2 and the xArm planner services to plan and execute robot motions.
 
+## Running MoveIT Tutorials
+
+This works only after the tutorials have been installed as described in [Optional: Build the MoveIt tutorials](#optional-build-the-moveit-tutorials). These demos start a Panda arm, so run them from a bash container, not with `planner` or `servo`.
+
+If you built the overlay in the shell you are using, load it. It was not on the path when that container started:
+
+```bash
+source /home/ubuntu/overlay_ws/install/setup.bash
+```
+
+A later `docker compose run --rm xarm7-ctl bash` sources the overlay for you.
+
+Each tutorial page has a "Running the Code" section with the exact launch line. The Humble pages are at [moveit.picknik.ai/humble](https://moveit.picknik.ai/humble/index.html). The same text is in the clone, for example `tutorials/moveit2_tutorials/doc/examples/move_group_interface/move_group_interface_tutorial.rst`.
+
+From inside the container, list what this build installed:
+
+```bash
+find $(ros2 pkg prefix moveit2_tutorials)/share/moveit2_tutorials -name '*.launch.py'
+ros2 pkg executables moveit2_tutorials
+```
+
+A tutorial that brings up RViz by itself is a single command:
+
+```bash
+ros2 launch moveit2_tutorials demo.launch.py
+```
+
+A tutorial that talks to a running MoveIt session needs two shells in the same container. The Move Group C++ Interface page says:
+
+```bash
+ros2 launch moveit2_tutorials move_group.launch.py
+```
+
+```bash
+docker exec -it hn-xarm7-sim-xarm7-ctl-run-<id> bash
+source /opt/ros/humble/setup.bash
+source /home/ubuntu/ros2_ws/install/setup.bash
+source /home/ubuntu/overlay_ws/install/setup.bash
+ros2 launch moveit2_tutorials move_group_interface_tutorial.launch.py
+```
+
+`docker exec` does not run the entrypoint, so that second shell needs all three `source` lines. On the host, run `xhost +local:docker` first if RViz reports that it cannot connect to the display.
+
 ## Useful Commands
 
 ```bash
@@ -247,6 +310,7 @@ XARM7/
 ├── cyclonedds.xml       # DDS configuration (optional)
 ├── entrypoint.sh        # Startup script
 ├── packages/            # ROS packages added to the overlay workspace
+├── tutorials/           # MoveIt tutorials, built in the same overlay
 ├── src/                 # User scripts / development code
 └── README.md            # This file
 ```
