@@ -18,6 +18,7 @@ Read the explanation on the [moveit page](https://moveit.picknik.ai/main/doc/exa
 * Read the [beginner ROS tutorial](https://docs.ros.org/en/humble/Tutorials/Beginner-CLI-Tools.html)
 * Watch the [MoveIt Introduction Video](https://youtu.be/7KvF7Dj7bz0)
 * Read the [MoveIt quickstart](https://moveit.picknik.ai/main/doc/tutorials/quickstart_in_rviz/quickstart_in_rviz_tutorial.html)
+* Understand the [MoveIt ecosystem](https://picknik.ai/hardware-ecosystem/)
 
 ## Prerequisites
 
@@ -298,6 +299,9 @@ ros2 action list
 
 # Check controller status
 ros2 control list_controllers
+
+# Check the architecture
+ros2 rqt_graph rqt_graph
 ```
 
 ## File Structure
@@ -312,6 +316,7 @@ XARM7/
 ├── packages/            # ROS packages added to the overlay workspace
 ├── tutorials/           # MoveIt tutorials, built in the same overlay
 ├── src/                 # User scripts / development code
+├── scene_objects/       # Object files, mounted at /home/ubuntu/scene_objects
 └── README.md            # This file
 ```
 

@@ -20,6 +20,7 @@ services:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - /mnt/wslg:/mnt/wslg
       - ./src:/home/ubuntu/src
+      - ./scene_objects:/home/ubuntu/scene_objects
       - /dev/input:/dev/input
       - overlay_ws:/home/ubuntu/overlay_ws
       - ./packages:/home/ubuntu/overlay_ws/src
