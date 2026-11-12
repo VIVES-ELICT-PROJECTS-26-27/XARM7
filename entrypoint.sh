@@ -21,7 +21,7 @@ case "${1:-planner}" in
             exec ros2 launch xarm_planner xarm7_planner_realmove.launch.py \
                 robot_ip:="$2"
         fi
-        exec ros2 launch xarm_planner xarm7_planner_fake.launch.py
+        exec ros2 launch xarm_planner xarm7_planner_fake.launch.py add_gripper:=true gripper_version:=G2 add_gripper:=true gripper_version:=G2
         ;;
 
     servo)
