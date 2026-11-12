@@ -34,6 +34,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-humble-moveit-visual-tools \
     ros-humble-rviz-visual-tools \
     ros-humble-moveit-task-constructor-core \
+    ros-humble-moveit-task-constructor-capabilities \
+    ros-humble-moveit-task-constructor-visualization \
     ros-humble-moveit-hybrid-planning \
     ros-humble-moveit-resources-panda-moveit-config \
     ros-humble-moveit-configs-utils \

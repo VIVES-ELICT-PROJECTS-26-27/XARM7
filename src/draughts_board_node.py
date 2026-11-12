@@ -19,22 +19,39 @@ Z_HEIGHT_M = Z_HEIGHT_MM / 1000.0         # 0.100 m
 
 # --- POSITIE VAN HET NULPUNT (VAK 1) T.O.V. DE ROBOTBASIS ---
 # 20 cm naar voren op de X-as:
+<<<<<<< HEAD
 BOARD_BASE_X_M = 0.210
+=======
+BOARD_BASE_X_M = 0.200
+>>>>>>> origin/brighten
 
 # 20.5 cm op de Y-as.
 # Omdat Y vanaf vak 1 alleen maar negatiever (-Y, naar rechts) wordt,
 # moet vak 1 aan de linkerkant (+0.205) of in het midden (0.0) starten.
+<<<<<<< HEAD
 BOARD_BASE_Y_M = 0.190 
+=======
+BOARD_BASE_Y_M = 0.205  
+>>>>>>> origin/brighten
 
 
 def square_to_board_offset(square: int) -> tuple[float, float]:
     """
+<<<<<<< HEAD
     Bereken de X/Y verplaatsing t.o.v. vak 1 op basis van het bordrooster.
     Vak 1 = (0, 0)
+=======
+    Bereken de X/Y verplaatsing t.o.v. vak 1 (het nulpunt).
+    
+    Regels:
+    - X >= 0 (loopt alleen naar voren)
+    - Y <= 0 (loopt alleen naar rechts)
+>>>>>>> origin/brighten
     """
     if not 1 <= square <= BOARD_SQUARE_COUNT:
         raise ValueError(f"Vul een vaknummer van 1 t/m {BOARD_SQUARE_COUNT} in.")
 
+<<<<<<< HEAD
     # Rijnummer van 0 t/m 9 (rij 0 = vak 1..5, rij 9 = vak 46..50)
     row = (square - 1) // 5
     col_idx = (square - 1) % 5
@@ -51,6 +68,22 @@ def square_to_board_offset(square: int) -> tuple[float, float]:
     # Y loopt naar rechts (negatief)
     offset_x = row * SQUARE_SIZE_M
     offset_y = -col * SQUARE_SIZE_M
+=======
+    # row loopt van 0 t/m 9
+    # position_in_row loopt van 0 t/m 4
+    row, position_in_row = divmod(square - 1, 5)
+
+    # Kolommen op een 10x10 dambord:
+    # Op de even rijen (0, 2, 4...) liggen de zwarte vakken op: 0, 2, 4, 6, 8 (of 1, 3, 5, 7, 9)
+    # Als vak 1 op het nulpunt (kolom 0) start:
+    column = position_in_row * 2 + (row % 2)
+
+    # X is altijd positief (naar voren)
+    offset_x = row * SQUARE_SIZE_M
+
+    # Y is altijd negatief of nul (naar rechts)
+    offset_y = -column * SQUARE_SIZE_M
+>>>>>>> origin/brighten
 
     return offset_x, offset_y
 
