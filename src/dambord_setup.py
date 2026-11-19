@@ -1,28 +1,32 @@
 #!/usr/bin/env python3
 """
 Zet het dambord en de damschijven in de MoveIt planning scene.
-Draai dit script elke keer nadat je het xArm MoveIt-systeem hebt gestart.
-
-  - Verwijdert eerst oude objecten (eerder toegevoegd bord/schijven), dus je mag het
-    script vaak achter elkaar draaien.
-  - Plaatst het bord (uit je STL, of anders een eenvoudig vlak bord) op de juiste plek.
-  - Zet 40 schijven klaar: wit op vakjes 1-20, zwart op vakjes 31-50.
-  - Staat de schijven en het bord toe elkaar te raken (nodig voor oppakken/neerzetten).
+Verbindt indien ingesteld automatisch met de echte xArm7 op cfg.ROBOT_IP,
+geeft de motoren vrij, tilt de arm eerst recht omhoog en zet hem in de beginpositie.
 
 Gebruik:
     python3 dambord_setup.py                  # bord + schijven
     python3 dambord_setup.py --geen-schijven  # alleen het bord
-
-Alle instellingen staan in dambord_config.py.
+    python3 dambord_setup.py --geen-klaarstand  # arm niet verplaatsen
 """
 
-import math
 import os
 import sys
+
+try:
+    import rclpy
+except ImportError:
+    _cmd = (
+        "source /opt/ros/*/setup.bash 2>/dev/null; "
+        "source /home/ubuntu/ros2_ws/install/setup.bash 2>/dev/null; "
+        f"exec {sys.executable} {' '.join(sys.argv)}"
+    )
+    os.execvp("bash", ["bash", "-c", _cmd])
+
+import math
 import time
 
 import numpy as np
-import rclpy
 from geometry_msgs.msg import Point, Pose
 from moveit_msgs.msg import (
     AllowedCollisionEntry,
@@ -37,6 +41,7 @@ from shape_msgs.msg import Mesh, MeshTriangle, SolidPrimitive
 from std_msgs.msg import ColorRGBA
 
 import dambord_config as cfg
+from dambord_move import Arm, SetupFout, activeer_echte_motoren, verbind_met_echte_arm
 
 
 def maak_pose(x, y, z):
@@ -44,7 +49,7 @@ def maak_pose(x, y, z):
     pose.position.x = float(x)
     pose.position.y = float(y)
     pose.position.z = float(z)
-    pose.orientation.w = 1.0   # let op: standaard is w = 0, dat is geen geldige oriëntatie
+    pose.orientation.w = 1.0
     return pose
 
 
@@ -75,7 +80,6 @@ class SceneClient:
         return True
 
     def _wacht(self, future, naam):
-        """Wacht op een serviceantwoord en meldt duidelijk wat er misgaat."""
         log = self.node.get_logger()
         rclpy.spin_until_future_complete(self.node, future, timeout_sec=20.0)
         if not future.done():
@@ -94,7 +98,7 @@ class SceneClient:
 
     def pas_toe(self, scene, naam="scene"):
         scene.is_diff = True
-        scene.robot_state.is_diff = True   # anders worden vastgemaakte objecten gewist
+        scene.robot_state.is_diff = True
         req = ApplyPlanningScene.Request()
         req.scene = scene
         result = self._wacht(self.apply.call_async(req), f"/apply_planning_scene ({naam})")
@@ -125,10 +129,10 @@ def lees_stl(pad):
     driehoeken = None
     if len(data) >= 84:
         aantal = int(np.frombuffer(data[80:84], dtype="<u4")[0])
-        if len(data) == 84 + 50 * aantal:   # binaire STL
+        if len(data) == 84 + 50 * aantal:
             dt = np.dtype([("n", "<f4", (3,)), ("v", "<f4", (3, 3)), ("a", "<u2")])
             driehoeken = np.frombuffer(data, dtype=dt, count=aantal, offset=84)["v"].astype(float)
-    if driehoeken is None:                   # ASCII STL
+    if driehoeken is None:
         tekst = data.decode("ascii", errors="ignore").split()
         punten = [
             [float(tekst[i + 1]), float(tekst[i + 2]), float(tekst[i + 3])]
@@ -166,11 +170,11 @@ def maak_bord():
 
             mn, mx = v.min(axis=0), v.max(axis=0)
             ex, ey = (mx - mn)[:2]
-            schaal = cfg.BORD_BREEDTE / max(ex, ey)   # STL schalen naar 45 cm
+            schaal = cfg.BORD_BREEDTE / max(ex, ey)
             v = (v - mn) * schaal
             v[:, 0] += x0
             v[:, 1] += y0
-            v[:, 2] += cfg.BORD_HOOGTE - v[:, 2].max()   # bovenkant op BORD_HOOGTE
+            v[:, 2] += cfg.BORD_HOOGTE - v[:, 2].max()
 
             mesh = Mesh()
             mesh.vertices = [Point(x=float(a), y=float(b), z=float(d)) for a, b, d in v]
@@ -215,7 +219,7 @@ def maak_schijf(nummer):
 
     cilinder = SolidPrimitive()
     cilinder.type = SolidPrimitive.CYLINDER
-    cilinder.dimensions = [cfg.SCHIJF_HOOGTE, cfg.SCHIJF_DIAMETER / 2]   # [hoogte, straal]
+    cilinder.dimensions = [cfg.SCHIJF_HOOGTE, cfg.SCHIJF_DIAMETER / 2]
     obj.primitives = [cilinder]
 
     x, y = cfg.vakje_positie(nummer)
@@ -246,6 +250,7 @@ def acm_toestaan(acm, a, b):
 
 def main():
     geen_schijven = "--geen-schijven" in sys.argv
+    geen_klaarstand = "--geen-klaarstand" in sys.argv
 
     rclpy.init()
     node = rclpy.create_node("dambord_setup")
@@ -253,6 +258,10 @@ def main():
     client = SceneClient(node)
 
     try:
+        if not verbind_met_echte_arm(log):
+            return
+        activeer_echte_motoren(node)
+
         if not client.wacht():
             return
 
@@ -262,7 +271,7 @@ def main():
             | PlanningSceneComponents.WORLD_OBJECT_NAMES
         )
         if scene is None:
-            log.error("Kon de planning scene niet lezen. Zie de melding hierboven.")
+            log.error("Kon de planning scene niet lezen.")
             return
 
         los = PlanningScene()
@@ -277,8 +286,6 @@ def main():
             if not client.pas_toe(los, "schijf loskoppelen"):
                 log.warn("Loskoppelen van een vastgemaakte schijf mislukt; ik ga door.")
 
-        # Alleen objecten verwijderen die er echt zijn. Objecten met dezelfde naam als
-        # de nieuwe worden bij het toevoegen toch overschreven, dus mislukken is niet erg.
         ids = [cfg.BORD_ID] + cfg.OUDE_OBJECTEN + [
             f"{cfg.SCHIJF_PREFIX}{n}" for n in range(1, 51)
         ]
@@ -288,13 +295,26 @@ def main():
             opruimen = PlanningScene()
             opruimen.world.collision_objects = [verwijder_object(i) for i in te_verwijderen]
             if not client.pas_toe(opruimen, "opruimen"):
-                log.warn(
-                    "Opruimen van de oude objecten mislukt; ik ga door. "
-                    "Oude objecten met een andere naam kunnen in RViz blijven staan "
-                    "(verwijder die dan met de hand)."
-                )
+                log.warn("Opruimen van de oude objecten mislukt; ik ga door.")
             else:
                 log.info(f"{len(te_verwijderen)} oude objecten verwijderd.")
+
+        # 1b. Kijk hoe de arm staat, ga eerst recht omhoog en dan naar de beginpositie
+        if geen_klaarstand:
+            log.info("Klaarstand overgeslagen (--geen-klaarstand).")
+        else:
+            try:
+                arm = Arm(node)
+                if not arm.controleer_kinematica():
+                    log.error(
+                        "De kinematica klopt niet met de robot; ik verplaats de arm niet."
+                    )
+                elif not arm.eerst_omhoog_en_naar_klaarstand():
+                    log.error(
+                        "Arm omhoog / naar de beginpositie brengen mislukt."
+                    )
+            except SetupFout as e:
+                log.warn(f"Arm niet gevonden ({e}); klaarstand overgeslagen.")
 
         # 2. Bord en schijven toevoegen
         bord, beschrijving = maak_bord()
@@ -319,8 +339,8 @@ def main():
             log.error("Bord en schijven toevoegen mislukt.")
             return
 
-        # 3. Botsingen schijf <-> bord en schijf <-> eindpunt van de arm toestaan
-        if schijven:
+        # 3. Botsingen toestaan: schijf <-> bord, schijf <-> gripper, vingers <-> bord
+        if schijven or cfg.GRIPPER:
             scene = client.lees(PlanningSceneComponents.ALLOWED_COLLISION_MATRIX)
             if scene is None:
                 log.warn("Kon de collision matrix niet lezen; oppakken kan botsingen melden.")
@@ -330,6 +350,9 @@ def main():
                     acm_toestaan(acm, s.id, cfg.BORD_ID)
                     for link in cfg.TOUCH_LINKS:
                         acm_toestaan(acm, s.id, link)
+                if cfg.GRIPPER:
+                    for link in cfg.VINGER_LINKS:
+                        acm_toestaan(acm, link, cfg.BORD_ID)
                 diff = PlanningScene()
                 diff.allowed_collision_matrix = acm
                 if not client.pas_toe(diff, "collision matrix"):
@@ -354,12 +377,11 @@ def main():
             f"Bord: x {cfg.BORD_X_NABIJ:.2f} tot {cfg.BORD_X_NABIJ + cfg.BORD_BREEDTE:.2f} m, "
             f"y {cfg.BORD_Y_MIDDEN - cfg.BORD_BREEDTE / 2:.3f} tot "
             f"{cfg.BORD_Y_MIDDEN + cfg.BORD_BREEDTE / 2:.3f} m, "
-            f"bovenkant z = {cfg.BORD_HOOGTE:.2f} m"
+            f"bovenkant z = {cfg.BORD_HOOGTE:.3f} m"
         )
         if not geen_schijven:
             log.info(
-                f"Schijven: wit op vakjes {cfg.SCHIJVEN_A[0]}-{cfg.SCHIJVEN_A[-1]}, "
-                f"zwart op vakjes {cfg.SCHIJVEN_B[0]}-{cfg.SCHIJVEN_B[-1]}"
+                "Schijven: wit op vakjes A1-J4, zwart op vakjes A7-J10"
             )
     finally:
         node.destroy_node()
