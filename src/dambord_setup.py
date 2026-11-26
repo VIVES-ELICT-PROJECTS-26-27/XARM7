@@ -1,13 +1,8 @@
 #!/usr/bin/env python3
 """
-Zet het dambord en de damschijven in de MoveIt planning scene.
-Verbindt indien ingesteld automatisch met de echte xArm7 op cfg.ROBOT_IP,
-geeft de motoren vrij, tilt de arm eerst recht omhoog en zet hem in de beginpositie.
-
-Gebruik:
-    python3 dambord_setup.py                  # bord + schijven
-    python3 dambord_setup.py --geen-schijven  # alleen het bord
-    python3 dambord_setup.py --geen-klaarstand  # arm niet verplaatsen
+Setup voor zowel de echte xArm7 als offline ROS/RViz:
+1. Wijst desgewenst de 4 zijden van het dambord aan om het bord recht te leggen.
+2. Plaatst het dambord en de 40 schijven in MoveIt/RViz (wit: A1-J4, zwart: A7-J10).
 """
 
 import os
@@ -23,366 +18,173 @@ except ImportError:
     )
     os.execvp("bash", ["bash", "-c", _cmd])
 
-import math
-import time
+from moveit_msgs.msg import AttachedCollisionObject, CollisionObject, PlanningScene, PlanningSceneComponents
 
-import numpy as np
-from geometry_msgs.msg import Point, Pose
-from moveit_msgs.msg import (
-    AllowedCollisionEntry,
-    AttachedCollisionObject,
-    CollisionObject,
-    ObjectColor,
-    PlanningScene,
-    PlanningSceneComponents,
+from dambord_move import (
+    Arm,
+    BASE_FRAME,
+    BORD_BREEDTE,
+    BORD_HOOGTE,
+    BORD_RAND,
+    BORD_X_NABIJ,
+    BORD_Y_MIDDEN,
+    EEF_FRAME,
+    Gripper,
+    Scene,
+    SetupFout,
+    activeer_echte_motoren,
+    ik,
+    klaar_q,
+    limiet_fout,
+    plaats_bord_en_schijven,
+    verbind_met_arm,
 )
-from moveit_msgs.srv import ApplyPlanningScene, GetPlanningScene
-from shape_msgs.msg import Mesh, MeshTriangle, SolidPrimitive
-from std_msgs.msg import ColorRGBA
 
-import dambord_config as cfg
-from dambord_move import Arm, SetupFout, activeer_echte_motoren, verbind_met_echte_arm
+WIJS_HOOGTE_BOVEN_BORD = 0.005  # 5 mm boven de bovenkant van het bord
+HOVER_HOOGTE = 0.08            # 8 cm boven het bord tussen de zijden
 
+X_VOOR = BORD_X_NABIJ - BORD_RAND
+X_ACHTER = BORD_X_NABIJ + BORD_BREEDTE + BORD_RAND
+X_MIDDEN = (X_VOOR + X_ACHTER) / 2.0
 
-def maak_pose(x, y, z):
-    pose = Pose()
-    pose.position.x = float(x)
-    pose.position.y = float(y)
-    pose.position.z = float(z)
-    pose.orientation.w = 1.0
-    return pose
+Y_RECHTS = BORD_Y_MIDDEN - (BORD_BREEDTE / 2.0 + BORD_RAND)
+Y_LINKS = BORD_Y_MIDDEN + (BORD_BREEDTE / 2.0 + BORD_RAND)
+Y_MIDDEN = BORD_Y_MIDDEN
 
 
-def maak_kleur(rgba):
-    k = ColorRGBA()
-    k.r, k.g, k.b, k.a = (float(v) for v in rgba)
-    return k
+def _zoek_bereikbare_hoogte(x, y, z_start, q_ref):
+    for extra in (0.0, 0.01, 0.02, 0.04, 0.06):
+        z_test = z_start + extra
+        q = ik([x, y, z_test], q_ref)
+        if q is None or limiet_fout(q) is not None:
+            q = ik([x, y, z_test], klaar_q())
+        if q is not None and limiet_fout(q) is None:
+            return z_test
+    return None
 
 
-class SceneClient:
-    def __init__(self, node):
-        self.node = node
-        self.get = node.create_client(GetPlanningScene, "/get_planning_scene")
-        self.apply = node.create_client(ApplyPlanningScene, "/apply_planning_scene")
+def _ruim_oude_objecten_op(scene):
+    if not scene.beschikbaar:
+        return
+    huidige = scene.lees(
+        PlanningSceneComponents.WORLD_OBJECT_NAMES
+        | PlanningSceneComponents.ROBOT_STATE_ATTACHED_OBJECTS
+    )
+    if huidige is None:
+        return
 
-    def wacht(self, seconden=60.0):
-        log = self.node.get_logger()
-        eind = time.time() + seconden
-        for client, naam in ((self.get, "/get_planning_scene"),
-                             (self.apply, "/apply_planning_scene")):
-            while not client.wait_for_service(timeout_sec=1.0):
-                if time.time() > eind:
-                    log.error(
-                        f"{naam} niet gevonden. Draait het MoveIt-systeem? "
-                        "Controleer met: ros2 service list | grep planning_scene"
-                    )
-                    return False
-        return True
+    weg_wereld = []
+    for obj in huidige.world.collision_objects:
+        c = CollisionObject()
+        c.header.frame_id = BASE_FRAME
+        c.id = obj.id
+        c.operation = CollisionObject.REMOVE
+        weg_wereld.append(c)
 
-    def _wacht(self, future, naam):
-        log = self.node.get_logger()
-        rclpy.spin_until_future_complete(self.node, future, timeout_sec=20.0)
-        if not future.done():
-            log.error(f"{naam}: geen antwoord binnen 20 seconden.")
-            return None
-        if future.exception() is not None:
-            log.error(f"{naam}: serviceaanroep mislukt: {future.exception()}")
-            return None
-        return future.result()
+    weg_vast = []
+    for att in huidige.robot_state.attached_collision_objects:
+        a = AttachedCollisionObject()
+        a.link_name = EEF_FRAME
+        a.object.header.frame_id = BASE_FRAME
+        a.object.id = att.object.id
+        a.object.operation = CollisionObject.REMOVE
+        weg_vast.append(a)
 
-    def lees(self, onderdelen):
-        req = GetPlanningScene.Request()
-        req.components.components = onderdelen
-        result = self._wacht(self.get.call_async(req), "/get_planning_scene")
-        return result.scene if result is not None else None
-
-    def pas_toe(self, scene, naam="scene"):
-        scene.is_diff = True
-        scene.robot_state.is_diff = True
-        req = ApplyPlanningScene.Request()
-        req.scene = scene
-        result = self._wacht(self.apply.call_async(req), f"/apply_planning_scene ({naam})")
-        if result is None:
-            return False
-        if not result.success:
-            self.node.get_logger().error(
-                f"/apply_planning_scene ({naam}) gaf success=False. Kijk in het "
-                "terminalvenster van MoveIt (move_group) voor de reden."
-            )
-            return False
-        return True
+    if weg_wereld or weg_vast:
+        ps = PlanningScene()
+        ps.world.collision_objects = weg_wereld
+        ps.robot_state.attached_collision_objects = weg_vast
+        scene.pas_toe(ps)
 
 
-def verwijder_object(object_id):
-    obj = CollisionObject()
-    obj.header.frame_id = cfg.BASE_FRAME
-    obj.id = object_id
-    obj.operation = CollisionObject.REMOVE
-    return obj
+def lijn_zijden_uit(arm, gripper, log, is_echt):
+    standaard = "j" if is_echt else "n"
+    keuze = input(
+        f"\nDe 4 zijden van het bord aanwijzen om het bord recht te leggen? "
+        f"[j = ja / n = overslaan] (standaard: {standaard}): "
+    ).strip().lower()
+    if not keuze:
+        keuze = standaard
+    if keuze != "j":
+        return
 
+    gripper.dicht()
+    zijden = [
+        ("Voorzijde (robotkant)", X_VOOR, Y_MIDDEN),
+        ("Rechterzijde (-Y)", X_MIDDEN, Y_RECHTS),
+        ("Achterzijde (overkant)", X_ACHTER, Y_MIDDEN),
+        ("Linkerzijde (+Y)", X_MIDDEN, Y_LINKS),
+    ]
 
-def lees_stl(pad):
-    """Leest een binaire of ASCII STL zonder extra pakketten. Geeft (hoekpunten, driehoeken)."""
-    with open(pad, "rb") as f:
-        data = f.read()
+    z_basis = BORD_HOOGTE + WIJS_HOOGTE_BOVEN_BORD
+    z_hover = max(BORD_HOOGTE + HOVER_HOOGTE, z_basis + 0.05)
 
-    driehoeken = None
-    if len(data) >= 84:
-        aantal = int(np.frombuffer(data[80:84], dtype="<u4")[0])
-        if len(data) == 84 + 50 * aantal:
-            dt = np.dtype([("n", "<f4", (3,)), ("v", "<f4", (3, 3)), ("a", "<u2")])
-            driehoeken = np.frombuffer(data, dtype=dt, count=aantal, offset=84)["v"].astype(float)
-    if driehoeken is None:
-        tekst = data.decode("ascii", errors="ignore").split()
-        punten = [
-            [float(tekst[i + 1]), float(tekst[i + 2]), float(tekst[i + 3])]
-            for i, t in enumerate(tekst) if t == "vertex"
-        ]
-        if not punten or len(punten) % 3:
-            raise ValueError("geen geldig STL-bestand")
-        driehoeken = np.array(punten).reshape(-1, 3, 3)
+    while True:
+        gestopt = False
+        for idx, (naam, x, y) in enumerate(zijden, start=1):
+            z_wijs = _zoek_bereikbare_hoogte(x, y, z_basis, arm.huidige_q())
+            if z_wijs is None:
+                log.warn(f"{naam} buiten bereik; overgeslagen.")
+                continue
 
-    uniek, inverse = np.unique(np.round(driehoeken.reshape(-1, 3), 6),
-                               axis=0, return_inverse=True)
-    return uniek, np.asarray(inverse).reshape(-1, 3)
+            if not arm.beweeg(x, y, max(z_hover, z_wijs + 0.04), f"boven {naam}"):
+                gestopt = True
+                break
+            if not arm.beweeg(x, y, z_wijs, f"aanwijzen {naam}"):
+                gestopt = True
+                break
 
+            actie = input(
+                f"[{idx}/4] {naam} (x={x:.3f}, y={y:.3f}) -> "
+                "[Enter] = volgende zijde, 's' = stoppen met uitlijnen: "
+            ).strip().lower()
+            arm.beweeg(x, y, max(z_hover, z_wijs + 0.04), f"omhoog {naam}")
+            if actie == "s":
+                gestopt = True
+                break
 
-def maak_bord():
-    """Geeft (CollisionObject, beschrijving) van het bord."""
-    obj = CollisionObject()
-    obj.header.frame_id = cfg.BASE_FRAME
-    obj.id = cfg.BORD_ID
-    obj.pose = maak_pose(0, 0, 0)
-    obj.operation = CollisionObject.ADD
+        if gestopt:
+            break
+        if input("\nNog een controleronde langs de 4 zijden? [j/n] (standaard: n): ").strip().lower() != "j":
+            break
 
-    x0 = cfg.BORD_X_NABIJ
-    y0 = cfg.BORD_Y_MIDDEN - cfg.BORD_BREEDTE / 2
-
-    if os.path.exists(cfg.BORD_STL):
-        try:
-            v, faces = lees_stl(cfg.BORD_STL)
-
-            hoek = math.radians(cfg.BORD_STL_ROTATIE_GRADEN)
-            c, s = math.cos(hoek), math.sin(hoek)
-            v = np.column_stack([v[:, 0] * c - v[:, 1] * s,
-                                 v[:, 0] * s + v[:, 1] * c,
-                                 v[:, 2]])
-
-            mn, mx = v.min(axis=0), v.max(axis=0)
-            ex, ey = (mx - mn)[:2]
-            schaal = cfg.BORD_BREEDTE / max(ex, ey)
-            v = (v - mn) * schaal
-            v[:, 0] += x0
-            v[:, 1] += y0
-            v[:, 2] += cfg.BORD_HOOGTE - v[:, 2].max()
-
-            mesh = Mesh()
-            mesh.vertices = [Point(x=float(a), y=float(b), z=float(d)) for a, b, d in v]
-            mesh.triangles = []
-            for a, b, d in faces:
-                tri = MeshTriangle()
-                tri.vertex_indices = [int(a), int(b), int(d)]
-                mesh.triangles.append(tri)
-            obj.meshes = [mesh]
-            obj.mesh_poses = [maak_pose(0, 0, 0)]
-
-            dikte = (mx - mn)[2] * schaal
-            beschrijving = (
-                f"bord uit {cfg.BORD_STL} (schaal {schaal:.4f}, "
-                f"{ex * schaal * 100:.1f} x {ey * schaal * 100:.1f} cm, "
-                f"dikte {dikte * 100:.1f} cm)"
-            )
-            return obj, beschrijving
-        except Exception as e:
-            print(f"STL laden mislukt ({e}): ik gebruik een eenvoudig vlak bord. LET OP: dit is NIET je STL.")
-    else:
-        print(f"STL niet gevonden op {cfg.BORD_STL}: ik gebruik een eenvoudig vlak bord.")
-
-    doos = SolidPrimitive()
-    doos.type = SolidPrimitive.BOX
-    doos.dimensions = [cfg.BORD_BREEDTE, cfg.BORD_BREEDTE, cfg.BORD_DIKTE]
-    obj.primitives = [doos]
-    obj.primitive_poses = [maak_pose(
-        x0 + cfg.BORD_BREEDTE / 2,
-        cfg.BORD_Y_MIDDEN,
-        cfg.BORD_HOOGTE - cfg.BORD_DIKTE / 2,
-    )]
-    return obj, "eenvoudig vlak bord (geen STL)"
-
-
-def maak_schijf(nummer):
-    obj = CollisionObject()
-    obj.header.frame_id = cfg.BASE_FRAME
-    obj.id = f"{cfg.SCHIJF_PREFIX}{nummer}"
-    obj.pose = maak_pose(0, 0, 0)
-    obj.operation = CollisionObject.ADD
-
-    cilinder = SolidPrimitive()
-    cilinder.type = SolidPrimitive.CYLINDER
-    cilinder.dimensions = [cfg.SCHIJF_HOOGTE, cfg.SCHIJF_DIAMETER / 2]
-    obj.primitives = [cilinder]
-
-    x, y = cfg.vakje_positie(nummer)
-    obj.primitive_poses = [maak_pose(x, y, cfg.BORD_HOOGTE + cfg.SCHIJF_HOOGTE / 2)]
-    return obj
-
-
-def acm_toestaan(acm, a, b):
-    """Staat botsingen toe tussen a en b in de Allowed Collision Matrix."""
-    namen = list(acm.entry_names)
-    rijen = [list(r.enabled) for r in acm.entry_values]
-    for n in (a, b):
-        if n not in namen:
-            namen.append(n)
-            for r in rijen:
-                r.append(False)
-            rijen.append([False] * len(namen))
-    i, j = namen.index(a), namen.index(b)
-    rijen[i][j] = True
-    rijen[j][i] = True
-    acm.entry_names = namen
-    acm.entry_values = []
-    for r in rijen:
-        e = AllowedCollisionEntry()
-        e.enabled = r
-        acm.entry_values.append(e)
+    arm.eerst_omhoog_en_naar_klaarstand()
+    gripper.open()
 
 
 def main():
-    geen_schijven = "--geen-schijven" in sys.argv
-    geen_klaarstand = "--geen-klaarstand" in sys.argv
-
     rclpy.init()
     node = rclpy.create_node("dambord_setup")
     log = node.get_logger()
-    client = SceneClient(node)
 
     try:
-        if not verbind_met_echte_arm(log):
+        ok, is_echt = verbind_met_arm(log)
+        if not ok:
             return
-        activeer_echte_motoren(node)
-
-        if not client.wacht():
-            return
-
-        # 1. Opruimen: eerst vastgemaakte schijven loskoppelen, daarna alles verwijderen
-        scene = client.lees(
-            PlanningSceneComponents.ROBOT_STATE_ATTACHED_OBJECTS
-            | PlanningSceneComponents.WORLD_OBJECT_NAMES
-        )
-        if scene is None:
-            log.error("Kon de planning scene niet lezen.")
+        if is_echt and not activeer_echte_motoren(node):
             return
 
-        los = PlanningScene()
-        for a in scene.robot_state.attached_collision_objects:
-            if a.object.id.startswith(cfg.SCHIJF_PREFIX):
-                aco = AttachedCollisionObject()
-                aco.link_name = a.link_name
-                aco.object.id = a.object.id
-                aco.object.operation = CollisionObject.REMOVE
-                los.robot_state.attached_collision_objects.append(aco)
-        if los.robot_state.attached_collision_objects:
-            if not client.pas_toe(los, "schijf loskoppelen"):
-                log.warn("Loskoppelen van een vastgemaakte schijf mislukt; ik ga door.")
-
-        ids = [cfg.BORD_ID] + cfg.OUDE_OBJECTEN + [
-            f"{cfg.SCHIJF_PREFIX}{n}" for n in range(1, 51)
-        ]
-        bestaand = {o.id for o in scene.world.collision_objects}
-        te_verwijderen = [i for i in ids if i in bestaand]
-        if te_verwijderen:
-            opruimen = PlanningScene()
-            opruimen.world.collision_objects = [verwijder_object(i) for i in te_verwijderen]
-            if not client.pas_toe(opruimen, "opruimen"):
-                log.warn("Opruimen van de oude objecten mislukt; ik ga door.")
-            else:
-                log.info(f"{len(te_verwijderen)} oude objecten verwijderd.")
-
-        # 1b. Kijk hoe de arm staat, ga eerst recht omhoog en dan naar de beginpositie
-        if geen_klaarstand:
-            log.info("Klaarstand overgeslagen (--geen-klaarstand).")
-        else:
-            try:
-                arm = Arm(node)
-                if not arm.controleer_kinematica():
-                    log.error(
-                        "De kinematica klopt niet met de robot; ik verplaats de arm niet."
-                    )
-                elif not arm.eerst_omhoog_en_naar_klaarstand():
-                    log.error(
-                        "Arm omhoog / naar de beginpositie brengen mislukt."
-                    )
-            except SetupFout as e:
-                log.warn(f"Arm niet gevonden ({e}); klaarstand overgeslagen.")
-
-        # 2. Bord en schijven toevoegen
-        bord, beschrijving = maak_bord()
-        schijven = [] if geen_schijven else [
-            maak_schijf(n) for n in cfg.SCHIJVEN_A + cfg.SCHIJVEN_B
-        ]
-
-        nieuw = PlanningScene()
-        nieuw.world.collision_objects = [bord] + schijven
-        kleuren = {bord.id: cfg.KLEUR_BORD}
-        for n in cfg.SCHIJVEN_A:
-            kleuren[f"{cfg.SCHIJF_PREFIX}{n}"] = cfg.KLEUR_A
-        for n in cfg.SCHIJVEN_B:
-            kleuren[f"{cfg.SCHIJF_PREFIX}{n}"] = cfg.KLEUR_B
-        for object_id, rgba in kleuren.items():
-            if object_id == bord.id or not geen_schijven:
-                kleur = ObjectColor()
-                kleur.id = object_id
-                kleur.color = maak_kleur(rgba)
-                nieuw.object_colors.append(kleur)
-        if not client.pas_toe(nieuw, "bord en schijven toevoegen"):
-            log.error("Bord en schijven toevoegen mislukt.")
+        scene = Scene(node)
+        if not scene.beschikbaar:
+            log.error("Planning scene services niet gevonden.")
             return
 
-        # 3. Botsingen toestaan: schijf <-> bord, schijf <-> gripper, vingers <-> bord
-        if schijven or cfg.GRIPPER:
-            scene = client.lees(PlanningSceneComponents.ALLOWED_COLLISION_MATRIX)
-            if scene is None:
-                log.warn("Kon de collision matrix niet lezen; oppakken kan botsingen melden.")
-            else:
-                acm = scene.allowed_collision_matrix
-                for s in schijven:
-                    acm_toestaan(acm, s.id, cfg.BORD_ID)
-                    for link in cfg.TOUCH_LINKS:
-                        acm_toestaan(acm, s.id, link)
-                if cfg.GRIPPER:
-                    for link in cfg.VINGER_LINKS:
-                        acm_toestaan(acm, link, cfg.BORD_ID)
-                diff = PlanningScene()
-                diff.allowed_collision_matrix = acm
-                if not client.pas_toe(diff, "collision matrix"):
-                    log.warn("Collision matrix aanpassen mislukt.")
+        _ruim_oude_objecten_op(scene)
 
-        # 4. Controle
-        scene = client.lees(
-            PlanningSceneComponents.WORLD_OBJECT_NAMES
-            | PlanningSceneComponents.WORLD_OBJECT_GEOMETRY
-        )
-        if scene is None:
-            log.warn("Kon de scene niet teruglezen.")
+        arm = Arm(node)
+        if not arm.controleer_kinematica():
             return
-        namen = [o.id for o in scene.world.collision_objects]
-        n_schijven = sum(1 for n in namen if n.startswith(cfg.SCHIJF_PREFIX))
-        log.info(f"Klaar: {beschrijving}")
-        log.info(
-            f"Bord in de scene: {'ja' if cfg.BORD_ID in namen else 'NEE'}, "
-            f"schijven in de scene: {n_schijven}"
-        )
-        log.info(
-            f"Bord: x {cfg.BORD_X_NABIJ:.2f} tot {cfg.BORD_X_NABIJ + cfg.BORD_BREEDTE:.2f} m, "
-            f"y {cfg.BORD_Y_MIDDEN - cfg.BORD_BREEDTE / 2:.3f} tot "
-            f"{cfg.BORD_Y_MIDDEN + cfg.BORD_BREEDTE / 2:.3f} m, "
-            f"bovenkant z = {cfg.BORD_HOOGTE:.3f} m"
-        )
-        if not geen_schijven:
-            log.info(
-                "Schijven: wit op vakjes A1-J4, zwart op vakjes A7-J10"
-            )
+        if not arm.eerst_omhoog_en_naar_klaarstand():
+            log.error("Arm naar de beginpositie brengen mislukt.")
+            return
+
+        gripper = Gripper(node)
+        lijn_zijden_uit(arm, gripper, log, is_echt)
+        plaats_bord_en_schijven(scene, log)
+    except SetupFout as e:
+        log.error(str(e))
+    except (KeyboardInterrupt, EOFError):
+        pass
     finally:
         node.destroy_node()
         rclpy.shutdown()
