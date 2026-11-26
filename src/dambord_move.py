@@ -4,10 +4,13 @@ Beweeg de xArm7 met G2-gripper over een 10x10 dambord en verplaats damschijven.
 
 - Schakelt alleen over van de container-simulatie (fake) naar de echte xArm7
   als de echte driver nog niet draait; behoudt anders de lopende sessie + scene.
-- Wist foutcodes, zet de arm in mode 1 (trajectory-modus) en activeert de G2-gripper.
+- Pakt schijven iets hoger op en laat ze vanaf ~1 cm hoogte op het doelvakje vallen.
+- Neemt bij een slagzet (bijv. B4-D6 of B4xD6) automatisch de geslagen schijf weg
+  en legt deze naast het bord.
 """
 
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -53,16 +56,18 @@ except ImportError:
     Buffer = None
 
 # ======================= INSTELLINGEN =======================
-HOVER_HOOGTE = 0.10     # hoogte van het gripperpunt boven de bovenkant van het bord (m)
-PICK_HOOGTE = 0.02      # alleen zonder schijven: hoogte boven het bord bij "omlaag"
-PAUZE = 1.0             # seconden wachten onderaan
+HOVER_HOOGTE = 0.10          # hoogte van het gripperpunt boven de bovenkant van het bord (m)
+PICK_HOOGTE = 0.02           # alleen zonder schijven: hoogte boven het bord bij "omlaag"
+OPNEEM_HOOGTE_EXTRA = 0.003  # 3 mm hoger vastpakken zodat de grijper het bord niet raakt
+LOSLAAT_HOOGTE_EXTRA = 0.010 # 1,0 cm hoger loslaten zodat het schijfje op het vakje valt
+PAUZE = 0.6                  # seconden wachten bij grijpen/loslaten
 MAX_AFSTAND_SCHIJF_VAKJE = 0.03   # schijf telt als "op vakje" binnen 3 cm
 
 # --- Veiligheidszone ---
-ZONE_MARGE = 0.20           # 20 cm buiten het speelveld
-ZONE_MIN_BOVEN_BORD = 0.002  # gripperpunt nooit lager dan 1 cm boven het bord
-ZONE_MAX_BOVEN_BORD = 0.30  # gripperpunt nooit hoger dan 30 cm boven het bord
-MIN_AFSTAND_BASIS = 0.15    # minimale horizontale afstand tot de robotbasis (m)
+ZONE_MARGE = 0.20            # 20 cm buiten het speelveld
+ZONE_MIN_BOVEN_BORD = 0.002  # gripperpunt nooit lager dan 2 mm boven het bord
+ZONE_MAX_BOVEN_BORD = 0.30   # gripperpunt nooit hoger dan 30 cm boven het bord
+MIN_AFSTAND_BASIS = 0.15     # minimale horizontale afstand tot de robotbasis (m)
 
 # --- Gewrichten ---
 GEWRICHT_LIMIETEN_GRADEN = {
@@ -165,29 +170,6 @@ def _robot_bereikbaar(ip, timeout=2.0):
     return False
 
 
-def _stop_proces_veilig(naam_substr):
-    """Stopt alleen child-processen (nooit PID 1 of onze eigen bash-shell)."""
-    eigen_pid = os.getpid()
-    ouder_pid = os.getppid()
-    try:
-        ps = subprocess.check_output(["ps", "-eo", "pid,args"], text=True)
-        for regel in ps.splitlines()[1:]:
-            delen = regel.strip().split(None, 1)
-            if len(delen) < 2:
-                continue
-            pid = int(delen[0])
-            args = delen[1]
-            if pid in (1, eigen_pid, ouder_pid):
-                continue
-            if naam_substr in args and "dambord_" not in args:
-                try:
-                    os.kill(pid, 9)
-                except OSError:
-                    pass
-    except Exception:
-        pass
-
-
 def verbind_met_echte_arm(log):
     """
     Start xarm7_planner_realmove.launch.py met gripper_version:=G2 als deze nog niet draait.
@@ -238,7 +220,7 @@ def verbind_met_echte_arm(log):
 
 
 def activeer_echte_motoren(node):
-    """Wist fouten, zet de xArm in trajectory-modus (mode 0) en activeert arm + gripper."""
+    """Wist fouten, zet de xArm in position-modus (mode 0) en activeert arm + gripper."""
     log = node.get_logger()
     c_enable = node.create_client(SetInt16ById, "/xarm/motion_enable")
     if not c_enable.wait_for_service(timeout_sec=3.0):
@@ -258,7 +240,6 @@ def activeer_echte_motoren(node):
     if c_clean_warn.wait_for_service(timeout_sec=2.0):
         wacht_op(node, c_clean_warn.call_async(Call.Request()), "clean_warn", 5.0)
 
-    # Zet botsingsgevoeligheid op normaal (2) zodat hij niet onterecht stopt bij starten
     if c_coll_sens.wait_for_service(timeout_sec=1.0):
         req_cs = SetInt16.Request()
         req_cs.data = 2
@@ -520,7 +501,6 @@ class Arm:
             f"Huidige positie gripper: x={pos_nu[0]:.3f}, y={pos_nu[1]:.3f}, z={pos_nu[2]:.3f} m"
         )
 
-        # Stap 1: Eerst recht omhoog vanaf huidige (x, y) als de arm lager dan klaarstand hangt
         if pos_nu[2] < cfg.KLAAR_TCP[2] - 0.02:
             log.info(f"Stap 1: Arm eerst recht omhoog tillen naar z={veilige_z:.3f} m...")
             q_omhoog = ik([pos_nu[0], pos_nu[1], veilige_z], q_nu)
@@ -530,7 +510,6 @@ class Arm:
             else:
                 log.warn("Recht omhoog op huidige plek niet bereikbaar; ik ga direct naar klaarstand.")
 
-        # Stap 2: Vanuit hoge positie naar de vaste klaarstand boven het bord
         log.info(f"Stap 2: Arm naar de beginpositie (gripperpunt op {cfg.KLAAR_TCP})...")
         if not self._plan_en_voer_uit(klaar_q(), "klaarstand"):
             return False
@@ -593,7 +572,7 @@ class Arm:
 
 
 class Gripper:
-    """Opent en sluit de G2 gripper via /xarm_gripper_joint_plan + /xarm_gripper_exec_plan."""
+    """Opent en sluit de G2 gripper op zowel de echte xArm als in simulatie."""
 
     def __init__(self, node):
         self.node = node
@@ -635,6 +614,17 @@ class Gripper:
         if not self.actief:
             return True
 
+        if self.modus == "service":
+            verhouding = max(0.0, min(1.0, positie / max(0.01, cfg.GRIPPER_DICHT)))
+            echte_pos = float(850.0 * (1.0 - verhouding))
+            log.info(f"Gripper {naam} (pos = {echte_pos:.0f})")
+            req = GripperMove.Request()
+            req.pos = echte_pos
+            req.wait = True
+            req.timeout = 5.0
+            res = wacht_op(self.node, self.grip_pos_client.call_async(req), f"gripper {naam}", 10.0)
+            return res is not None and getattr(res, "ret", 0) == 0
+
         if self.modus == "planner":
             log.info(f"G2 Gripper {naam} (target = {positie:.2f} rad)")
             req = PlanJoint.Request()
@@ -649,17 +639,6 @@ class Gripper:
             if res_e is None or not res_e.success:
                 log.warn(f"Gripper {naam}: /xarm_gripper_exec_plan genegeerd (check: ros2 service list | grep grip)")
             return True
-
-        if self.modus == "service":
-            verhouding = max(0.0, min(1.0, positie / max(0.01, cfg.GRIPPER_DICHT)))
-            echte_pos = float(850.0 * (1.0 - verhouding))
-            log.info(f"Gripper {naam} (pos = {echte_pos:.0f})")
-            req = GripperMove.Request()
-            req.pos = echte_pos
-            req.wait = True
-            req.timeout = 5.0
-            res = wacht_op(self.node, self.grip_pos_client.call_async(req), f"gripper {naam}", 10.0)
-            return res is not None and getattr(res, "ret", 0) == 0
 
         log.info(f"Gripper {naam} (drive_joint = {positie:.2f} rad)")
         goal = FollowJointTrajectory.Goal()
@@ -818,12 +797,13 @@ class Schijven:
             if vakje in self.bezet:
                 self.log.warn(f"Vakje {cfg.vakje_naar_naam(vakje)} heeft meer dan één schijf.")
                 continue
+            # Schijven liggen door de zwaartekracht altijd vlak op het bord
             self.bezet[vakje] = {
                 "id": obj.id,
                 "kleur": schijf_kleur(obj.id),
                 "x": x,
                 "y": y,
-                "z_top": float(mx[2]),
+                "z_top": float(cfg.BORD_HOOGTE + cfg.SCHIJF_HOOGTE),
             }
 
         vast = [a.object.id for a in scene.robot_state.attached_collision_objects
@@ -916,19 +896,23 @@ class Schijven:
 
 
 # ---------------------------------------------------------------------------
-# Bewegingen en hoofdprogramma
+# Bewegingen, slaan en hoofdprogramma
 # ---------------------------------------------------------------------------
-def bezoek_punt(arm, label, x, y, z_pick, voor_omlaag=None, tussenactie=None):
-    z_hover = max(cfg.BORD_HOOGTE + HOVER_HOOGTE, z_pick + 0.05)
+def _bereken_opneem_z(z_top):
+    return max(ZONE_Z_MIN, z_top - cfg.GREEP_DIEPTE + OPNEEM_HOOGTE_EXTRA)
+
+
+def bezoek_punt(arm, label, x, y, z_doel, voor_omlaag=None, tussenactie=None):
+    z_hover = max(cfg.BORD_HOOGTE + HOVER_HOOGTE, z_doel + 0.05)
 
     log = arm.node.get_logger()
-    log.info(f"{label}: x={x:.3f}, y={y:.3f}")
+    log.info(f"{label}: x={x:.3f}, y={y:.3f}, z={z_doel:.3f}")
 
     if not arm.beweeg(x, y, z_hover, f"boven {label}"):
         return False
     if voor_omlaag is not None and not voor_omlaag():
         return False
-    if not arm.beweeg(x, y, z_pick, f"omlaag {label}"):
+    if not arm.beweeg(x, y, z_doel, f"omlaag {label}"):
         return False
 
     ok = tussenactie() if tussenactie else True
@@ -938,7 +922,7 @@ def bezoek_punt(arm, label, x, y, z_pick, voor_omlaag=None, tussenactie=None):
     return ok and omhoog
 
 
-def schijf_beurt(arm, gripper, schijven, nummer, vrije_kleurkeuze=False):
+def schijf_beurt(arm, gripper, schijven, nummer, vrije_kleurkeuze=False, wissel_beurt_na=True):
     naam = cfg.vakje_naar_naam(nummer)
 
     if schijven.vast_id is None:
@@ -953,10 +937,10 @@ def schijf_beurt(arm, gripper, schijven, nummer, vrije_kleurkeuze=False):
             )
             return False
 
-        z = max(ZONE_Z_MIN, info["z_top"] - cfg.GREEP_DIEPTE)
-        schijven.pick_z = z
+        z_pick = _bereken_opneem_z(info["z_top"])
+        schijven.pick_z = z_pick
         return bezoek_punt(
-            arm, naam, info["x"], info["y"], z,
+            arm, naam, info["x"], info["y"], z_pick,
             voor_omlaag=gripper.open,
             tussenactie=lambda: gripper.dicht() and schijven.vastmaken(info["id"], nummer),
         )
@@ -965,46 +949,124 @@ def schijf_beurt(arm, gripper, schijven, nummer, vrije_kleurkeuze=False):
             print(f"Vakje {naam} is bezet door een {schijven.bezet[nummer]['kleur']}e schijf. Kies een leeg vakje.")
             return False
         x, y = cfg.vakje_positie(nummer)
-        z = schijven.pick_z
-        if z is None:
-            z = max(ZONE_Z_MIN, cfg.BORD_HOOGTE + cfg.SCHIJF_HOOGTE - cfg.GREEP_DIEPTE)
+        z_basis = schijven.pick_z
+        if z_basis is None:
+            z_basis = _bereken_opneem_z(cfg.BORD_HOOGTE + cfg.SCHIJF_HOOGTE)
+        z_plaats = z_basis + LOSLAAT_HOOGTE_EXTRA
 
         geslaagd = bezoek_punt(
-            arm, naam, x, y, z,
+            arm, naam, x, y, z_plaats,
             tussenactie=lambda: gripper.open() and schijven.loslaten(naam),
         )
-        if geslaagd:
+        if geslaagd and wissel_beurt_na:
             schijven.wissel_beurt()
             print(f"Zet voltooid! Nu is {schijven.beurt.upper()} aan de beurt.")
         return geslaagd
+
+
+def vind_geslagen_schijven(schijven, van_nr, naar_nr, eigen_kleur):
+    """
+    Zoekt alle vijandelijke schijven die op de diagonaal tussen van_nr en naar_nr liggen.
+    Werkt voor zowel een gewone slag (2 vakjes) als een dam-slag (meerdere vakjes).
+    """
+    x1, y1 = cfg.vakje_positie(van_nr)
+    x2, y2 = cfg.vakje_positie(naar_nr)
+    dx = x2 - x1
+    dy = y2 - y1
+
+    stappen_x = round(abs(dx) / cfg.VAK)
+    stappen_y = round(abs(dy) / cfg.VAK)
+    if stappen_x != stappen_y or stappen_x < 2:
+        return []
+
+    geslagen = []
+    for stap in range(1, stappen_x):
+        tx = x1 + (dx / stappen_x) * stap
+        ty = y1 + (dy / stappen_y) * stap
+        tussen_nr, afstand = cfg.dichtstbij(tx, ty)
+        if afstand <= 0.015 and tussen_nr in schijven.bezet:
+            if schijven.bezet[tussen_nr]["kleur"] != eigen_kleur:
+                geslagen.append(tussen_nr)
+    return geslagen
 
 
 def verwijder_geslagen_schijf(arm, gripper, schijven, nummer):
     naam = cfg.vakje_naar_naam(nummer)
     if schijven.vast_id is not None:
         print("De gripper houdt al een schijf vast. Zet die eerst neer.")
-        return
+        return False
     if nummer not in schijven.bezet:
         print(f"Op {naam} ligt geen schijf om te verwijderen.")
-        return
+        return False
 
     info = schijven.bezet[nummer]
-    z = max(ZONE_Z_MIN, info["z_top"] - cfg.GREEP_DIEPTE)
+    z_pick = _bereken_opneem_z(info["z_top"])
     opgepakt = bezoek_punt(
-        arm, f"slaan op {naam}", info["x"], info["y"], z,
+        arm, f"slaan op {naam}", info["x"], info["y"], z_pick,
         voor_omlaag=gripper.open,
         tussenactie=lambda: gripper.dicht() and schijven.vastmaken(info["id"], nummer),
     )
     if not opgepakt:
-        return
+        return False
 
     ax, ay = cfg.AFLEG_POSITIE
     ay_offset = ay + (schijven.geslagen_teller % 5) * 0.04
     schijven.geslagen_teller += 1
-    bezoek_punt(
-        arm, "aflegplek naast bord", ax, ay_offset, z,
+    z_plaats = z_pick + LOSLAAT_HOOGTE_EXTRA
+    return bezoek_punt(
+        arm, "aflegplek naast bord", ax, ay_offset, z_plaats,
         tussenactie=lambda: gripper.open() and schijven.loslaten("aflegplek"),
     )
+
+
+def voer_zetreeks_uit(arm, gripper, schijven, vakjes):
+    """
+    Voert een enkele zet (bijv. B4-C5), een slagzet (B4-D6 / B4xD6)
+    of een meerslag (B4-D6-F8) uit en legt geslagen schijven naast het bord.
+    """
+    log = arm.node.get_logger()
+    alle_geslagen = []
+
+    for i in range(len(vakjes) - 1):
+        van_nr = vakjes[i]
+        naar_nr = vakjes[i + 1]
+
+        if van_nr not in schijven.bezet:
+            print(f"Op {cfg.vakje_naar_naam(van_nr)} ligt geen schijf.")
+            return False
+        eigen_kleur = schijven.bezet[van_nr]["kleur"]
+        if eigen_kleur != schijven.beurt:
+            print(
+                f"Op {cfg.vakje_naar_naam(van_nr)} ligt een {eigen_kleur}e schijf, "
+                f"maar {schijven.beurt.upper()} is aan de beurt! (Typ 'w' om te wisselen.)"
+            )
+            return False
+        if naar_nr in schijven.bezet:
+            print(f"Vakje {cfg.vakje_naar_naam(naar_nr)} is al bezet.")
+            return False
+
+        geslagen = vind_geslagen_schijven(schijven, van_nr, naar_nr, eigen_kleur)
+        if not schijf_beurt(arm, gripper, schijven, van_nr, wissel_beurt_na=False):
+            return False
+        if not schijf_beurt(arm, gripper, schijven, naar_nr, wissel_beurt_na=False):
+            return False
+
+        for g_nr in geslagen:
+            g_naam = cfg.vakje_naar_naam(g_nr)
+            log.info(f"Geslagen schijf op {g_naam} wegnemen en naast het bord leggen...")
+            if not verwijder_geslagen_schijf(arm, gripper, schijven, g_nr):
+                return False
+            alle_geslagen.append(g_naam)
+
+    schijven.wissel_beurt()
+    if alle_geslagen:
+        print(
+            f"Slagzet voltooid (geslagen: {', '.join(alle_geslagen)})! "
+            f"Nu is {schijven.beurt.upper()} aan de beurt."
+        )
+    else:
+        print(f"Zet voltooid! Nu is {schijven.beurt.upper()} aan de beurt.")
+    return True
 
 
 def calibratie(arm):
@@ -1087,7 +1149,7 @@ def main():
                 else f"beurt: {schijven.beurt.upper()}"
             )
             invoer = input(
-                f"\n[{status}] Vak (bijv. B4 of B4-C5), 'x B4' = slaan, "
+                f"\n[{status}] Zet (bijv. B4-C5 of slag B4-D6), 'x B4' = los slaan, "
                 "'w' = wissel kleur, 'l' = overzicht, 'o'/'d' = gripper, 'c' = cal, 'q' = stop: "
             ).strip()
 
@@ -1132,18 +1194,23 @@ def main():
                     verwijder_geslagen_schijf(arm, gripper, schijven, nummer)
                 continue
 
-            delen = invoer.replace("-", " ").split()
-            if len(delen) == 2:
-                van_nr, fout1 = cfg.naam_naar_vakje(delen[0])
-                naar_nr, fout2 = cfg.naam_naar_vakje(delen[1])
-                if fout1 or fout2:
-                    print(fout1 or fout2)
+            delen = [d for d in re.split(r"[-xX\s]+", invoer.strip()) if d]
+            if len(delen) >= 2:
+                vakjes = []
+                ongeldig = None
+                for d in delen:
+                    nr, fout = cfg.naam_naar_vakje(d)
+                    if fout:
+                        ongeldig = fout
+                        break
+                    vakjes.append(nr)
+                if ongeldig:
+                    print(ongeldig)
                     continue
                 if schijven.actief:
-                    if schijf_beurt(arm, gripper, schijven, van_nr):
-                        schijf_beurt(arm, gripper, schijven, naar_nr)
+                    voer_zetreeks_uit(arm, gripper, schijven, vakjes)
                 else:
-                    for nr in (van_nr, naar_nr):
+                    for nr in vakjes:
                         x, y = cfg.vakje_positie(nr)
                         bezoek_punt(arm, cfg.vakje_naar_naam(nr), x, y, cfg.BORD_HOOGTE + PICK_HOOGTE)
                 if arm.geblokkeerd:
